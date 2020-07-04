@@ -6,8 +6,10 @@
 
 # Import Libraries
 import sys
+
 version = (3, 0)
 cur_version = sys.version_info
+
 if cur_version >= version:  # If the Current Version of Python is 3.0 or above
     import urllib.request
     from urllib.request import Request, urlopen
@@ -23,7 +25,9 @@ else:  # If the Current Version of Python is 2.x
     from urllib import quote
     import httplib
     from httplib import IncompleteRead, BadStatusLine
+
     httplib._MAXHEADERS = 1000
+
 import time  # Importing the time library to check the time of code execution
 import os
 import argparse
@@ -52,13 +56,18 @@ def user_input():
     if object_check['config_file'] != '':
         records = []
         json_file = json.load(open(config_file_check[0].config_file))
-        for record in range(0,len(json_file['Records'])):
+
+        for record in range(0, len(json_file['Records'])):
             arguments = {}
+
             for i in args_list:
                 arguments[i] = None
+
             for key, value in json_file['Records'][record].items():
                 arguments[key] = value
+
             records.append(arguments)
+
         records_count = len(records)
     else:
         # Taking command line arguments from users
@@ -126,19 +135,43 @@ def user_input():
 class googleimagesdownload:
     def __init__(self):
         pass
+    
+    def _extract_data_pack(self, page):
+        start_line = page.find("AF_initDataCallback({key: \\'ds:1\\'") - 10
+        start_object = page.find('[', start_line + 1)
+        end_object = page.find('</script>', start_object + 1) - 5
+        object_raw = str(page[start_object:end_object])
+        return bytes(object_raw, "utf-8").decode("unicode_escape")
+
+    def _extract_data_pack_extended(self, page):
+        start_line = page.find("AF_initDataCallback({key: 'ds:1'") - 10
+        start_object = page.find('[', start_line + 1)
+        end_object = page.find('</script>', start_object + 1) - 4
+        return str(page[start_object:end_object])
+
+    def _extract_data_pack_ajax(self, data):
+        lines = data.split('\n')
+        return json.loads(lines[3] + lines[4])[0][2]
+
+    def _image_objects_from_pack(self, data):
+        image_objects = json.loads(data)[31][0][12][2]
+        image_objects = [x for x in image_objects if x[0] == 1]
+        return image_objects
 
     # Downloading entire Web Document (Raw Page Content)
-    def download_page(self,url):
+    def download_page(self, url):
         version = (3, 0)
         cur_version = sys.version_info
         if cur_version >= version:  # If the Current Version of Python is 3.0 or above
             try:
                 headers = {}
                 headers['User-Agent'] = "Mozilla/5.0 (Windows NT 6.1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/41.0.2228.0 Safari/537.36"
+
                 req = urllib.request.Request(url, headers=headers)
                 resp = urllib.request.urlopen(req)
                 respData = str(resp.read())
-                return respData
+
+                return self._image_objects_from_pack(self._extract_data_pack(respData)), self.get_all_tabs(respData)
             except Exception as e:
                 print("Could not open URL. Please check your internet connection and/or ssl settings \n"
                       "If you are using proxy, make sure your proxy settings is configured correctly")
@@ -148,22 +181,23 @@ class googleimagesdownload:
                 headers = {}
                 headers['User-Agent'] = "Mozilla/5.0 (X11; Linux i686) AppleWebKit/537.17 (KHTML, like Gecko) Chrome/24.0.1312.27 Safari/537.17"
                 req = urllib2.Request(url, headers=headers)
+                
                 try:
                     response = urllib2.urlopen(req)
                 except URLError:  # Handling SSL certificate failed
                     context = ssl._create_unverified_context()
                     response = urlopen(req, context=context)
+                
                 page = response.read()
-                return page
+                return self._image_objects_from_pack(self._extract_data_pack(page)), self.get_all_tabs(page)
             except:
                 print("Could not open URL. Please check your internet connection and/or ssl settings \n"
                       "If you are using proxy, make sure your proxy settings is configured correctly")
                 sys.exit()
                 return "Page Not found"
 
-
     # Download Page for more than 100 images
-    def download_extended_page(self,url,chromedriver):
+    def download_extended_page(self, url, chromedriver):
         from selenium import webdriver
         from selenium.webdriver.common.keys import Keys
         if sys.version_info[0] < 3:
@@ -184,6 +218,34 @@ class googleimagesdownload:
 
         # Open the link
         browser.get(url)
+        browser.execute_script("""
+            (function(XHR){
+                "use strict";
+                var open = XHR.prototype.open;
+                var send = XHR.prototype.send;
+                var data = [];
+                XHR.prototype.open = function(method, url, async, user, pass) {
+                    this._url = url;
+                    open.call(this, method, url, async, user, pass);
+                }
+                XHR.prototype.send = function(data) {
+                    var self = this;
+                    var url = this._url;
+                    function stateChanged() {
+                        if (self.readyState == 4) {
+                            console.log("data available for: " + url)
+                            XHR.prototype._data.push(self.response);
+                        }
+                    }
+                    if (url.includes("/batchexecute?")) {
+                        this.addEventListener("readystatechange", stateChanged, false);
+                    }
+                    send.call(this, data);
+                };
+                XHR.prototype._data = [];
+            })(XMLHttpRequest);
+        """)
+
         time.sleep(1)
         print("Getting you a lot of images. This may take a few moments...")
 
@@ -206,29 +268,34 @@ class googleimagesdownload:
         print("Reached end of Page.")
         time.sleep(0.5)
 
-        source = browser.page_source #page source
-        #close the browser
+        source = browser.page_source  # page source
+        images = self._image_objects_from_pack(self._extract_data_pack_extended(source))
+
+        ajax_data = browser.execute_script("return XMLHttpRequest.prototype._data")
+        for chunk in ajax_data:
+            images += self._image_objects_from_pack(self._extract_data_pack_ajax(chunk))
+
+        # close the browser
         browser.close()
 
-        return source
+        return images, self.get_all_tabs(source)
 
 
-    #Correcting the escape characters for python2
-    def replace_with_byte(self,match):
+    # Correcting the escape characters for python2
+    def replace_with_byte(self, match):
         return chr(int(match.group(0)[1:], 8))
 
-    def repair(self,brokenjson):
+    def repair(self, brokenjson):
         invalid_escape = re.compile(r'\\[0-7]{1,3}')  # up to 3 digits for byte values up to FF
         return invalid_escape.sub(self.replace_with_byte, brokenjson)
 
-
     # Finding 'Next Image' from the given raw page
-    def get_next_tab(self,s):
+    def get_next_tab(self, s):
         start_line = s.find('class="dtviD"')
         if start_line == -1:  # If no links are found then give an error!
             end_quote = 0
             link = "no_tabs"
-            return link,'',end_quote
+            return link, '', end_quote
         else:
             start_line = s.find('class="dtviD"')
             start_content = s.find('href="', start_line + 1)
@@ -247,16 +314,15 @@ class googleimagesdownload:
             if chars_end == -1:
                 updated_item_name = (url_item_name[chars + 5:]).replace("+", " ")
             else:
-                updated_item_name = (url_item_name[chars+5:chars_end]).replace("+", " ")
+                updated_item_name = (url_item_name[chars + 5:chars_end]).replace("+", " ")
 
             return url_item, updated_item_name, end_content
 
-
     # Getting all links with the help of '_images_get_next_image'
-    def get_all_tabs(self,page):
+    def get_all_tabs(self, page):
         tabs = {}
         while True:
-            item,item_name,end_content = self.get_next_tab(page)
+            item, item_name, end_content = self.get_next_tab(page)
             if item == "no_tabs":
                 break
             else:
@@ -268,23 +334,35 @@ class googleimagesdownload:
                     page = page[end_content:]
         return tabs
 
-
-    #Format the object in readable format
-    def format_object(self,object):
+    # Format the object in readable format
+    def format_object(self, object):
+        data = object[1]
+        main = data[3]
+        info = data[9]
+        
+        if info is None:
+            info = data[11]
+        
         formatted_object = {}
-        formatted_object['image_format'] = object['ity']
-        formatted_object['image_height'] = object['oh']
-        formatted_object['image_width'] = object['ow']
-        formatted_object['image_link'] = object['ou']
-        formatted_object['image_description'] = object['pt']
-        formatted_object['image_host'] = object['rh']
-        formatted_object['image_source'] = object['ru']
-        formatted_object['image_thumbnail_url'] = object['tu']
+        
+        try:
+            formatted_object['image_height'] = main[2]
+            formatted_object['image_width'] = main[1]
+            formatted_object['image_link'] = main[0]
+            formatted_object['image_format'] = main[0][-1 * (len(main[0]) - main[0].rfind(".") - 1):]
+            formatted_object['image_description'] = info['2003'][3]
+            formatted_object['image_host'] = info['183836587'][0]
+            formatted_object['image_source'] = info['2003'][2]
+            formatted_object['image_thumbnail_url'] = data[2][0]
+        except Exception as e:
+            print(e)
+            return None
+
         return formatted_object
 
 
-    #function to download single image
-    def single_image(self,image_url):
+    # function to download single image
+    def single_image(self, image_url):
         main_directory = "downloads"
         extensions = (".jpg", ".gif", ".png", ".bmp", ".svg", ".webp", ".ico")
         url = image_url
@@ -322,7 +400,7 @@ class googleimagesdownload:
         print("completed ====> " + image_name.encode('raw_unicode_escape').decode('utf-8'))
         return
 
-    def similar_images(self,similar_images):
+    def similar_images(self, similar_images):
         version = (3, 0)
         cur_version = sys.version_info
         if cur_version >= version:  # If the Current Version of Python is 3.0 or above
@@ -366,16 +444,23 @@ class googleimagesdownload:
                 l3 = content.find('/search?sa=X&amp;q=')
                 l4 = content.find(';', l3 + 19)
                 urll2 = content[l3 + 19:l4]
-                return(urll2)
+                return (urll2)
             except:
                 return "Cloud not connect to Google Images endpoint"
 
-    #Building URL parameters
-    def build_url_parameters(self,arguments):
+    # Building URL parameters
+    def build_url_parameters(self, arguments):
         if arguments['language']:
             lang = "&lr="
-            lang_param = {"Arabic":"lang_ar","Chinese (Simplified)":"lang_zh-CN","Chinese (Traditional)":"lang_zh-TW","Czech":"lang_cs","Danish":"lang_da","Dutch":"lang_nl","English":"lang_en","Estonian":"lang_et","Finnish":"lang_fi","French":"lang_fr","German":"lang_de","Greek":"lang_el","Hebrew":"lang_iw ","Hungarian":"lang_hu","Icelandic":"lang_is","Italian":"lang_it","Japanese":"lang_ja","Korean":"lang_ko","Latvian":"lang_lv","Lithuanian":"lang_lt","Norwegian":"lang_no","Portuguese":"lang_pt","Polish":"lang_pl","Romanian":"lang_ro","Russian":"lang_ru","Spanish":"lang_es","Swedish":"lang_sv","Turkish":"lang_tr"}
-            lang_url = lang+lang_param[arguments['language']]
+            lang_param = {"Arabic": "lang_ar", "Chinese (Simplified)": "lang_zh-CN",
+                          "Chinese (Traditional)": "lang_zh-TW", "Czech": "lang_cs", "Danish": "lang_da",
+                          "Dutch": "lang_nl", "English": "lang_en", "Estonian": "lang_et", "Finnish": "lang_fi",
+                          "French": "lang_fr", "German": "lang_de", "Greek": "lang_el", "Hebrew": "lang_iw ",
+                          "Hungarian": "lang_hu", "Icelandic": "lang_is", "Italian": "lang_it", "Japanese": "lang_ja",
+                          "Korean": "lang_ko", "Latvian": "lang_lv", "Lithuanian": "lang_lt", "Norwegian": "lang_no",
+                          "Portuguese": "lang_pt", "Polish": "lang_pl", "Romanian": "lang_ro", "Russian": "lang_ru",
+                          "Spanish": "lang_es", "Swedish": "lang_sv", "Turkish": "lang_tr"}
+            lang_url = lang + lang_param[arguments['language']]
         else:
             lang_url = ''
 
@@ -394,14 +479,35 @@ class googleimagesdownload:
 
         built_url = "&tbs="
         counter = 0
-        params = {'color':[arguments['color'],{'red':'ic:specific,isc:red', 'orange':'ic:specific,isc:orange', 'yellow':'ic:specific,isc:yellow', 'green':'ic:specific,isc:green', 'teal':'ic:specific,isc:teel', 'blue':'ic:specific,isc:blue', 'purple':'ic:specific,isc:purple', 'pink':'ic:specific,isc:pink', 'white':'ic:specific,isc:white', 'gray':'ic:specific,isc:gray', 'black':'ic:specific,isc:black', 'brown':'ic:specific,isc:brown'}],
-                  'color_type':[arguments['color_type'],{'full-color':'ic:color', 'black-and-white':'ic:gray','transparent':'ic:trans'}],
-                  'usage_rights':[arguments['usage_rights'],{'labeled-for-reuse-with-modifications':'sur:fmc','labeled-for-reuse':'sur:fc','labeled-for-noncommercial-reuse-with-modification':'sur:fm','labeled-for-nocommercial-reuse':'sur:f'}],
-                  'size':[arguments['size'],{'large':'isz:l','medium':'isz:m','icon':'isz:i','>400*300':'isz:lt,islt:qsvga','>640*480':'isz:lt,islt:vga','>800*600':'isz:lt,islt:svga','>1024*768':'visz:lt,islt:xga','>2MP':'isz:lt,islt:2mp','>4MP':'isz:lt,islt:4mp','>6MP':'isz:lt,islt:6mp','>8MP':'isz:lt,islt:8mp','>10MP':'isz:lt,islt:10mp','>12MP':'isz:lt,islt:12mp','>15MP':'isz:lt,islt:15mp','>20MP':'isz:lt,islt:20mp','>40MP':'isz:lt,islt:40mp','>70MP':'isz:lt,islt:70mp'}],
-                  'type':[arguments['type'],{'face':'itp:face','photo':'itp:photo','clipart':'itp:clipart','line-drawing':'itp:lineart','animated':'itp:animated'}],
-                  'time':[arguments['time'],{'past-24-hours':'qdr:d','past-7-days':'qdr:w','past-month':'qdr:m','past-year':'qdr:y'}],
-                  'aspect_ratio':[arguments['aspect_ratio'],{'tall':'iar:t','square':'iar:s','wide':'iar:w','panoramic':'iar:xw'}],
-                  'format':[arguments['format'],{'jpg':'ift:jpg','gif':'ift:gif','png':'ift:png','bmp':'ift:bmp','svg':'ift:svg','webp':'webp','ico':'ift:ico','raw':'ift:craw'}]}
+        params = {'color': [arguments['color'], {'red': 'ic:specific,isc:red', 'orange': 'ic:specific,isc:orange',
+                                                 'yellow': 'ic:specific,isc:yellow', 'green': 'ic:specific,isc:green',
+                                                 'teal': 'ic:specific,isc:teel', 'blue': 'ic:specific,isc:blue',
+                                                 'purple': 'ic:specific,isc:purple', 'pink': 'ic:specific,isc:pink',
+                                                 'white': 'ic:specific,isc:white', 'gray': 'ic:specific,isc:gray',
+                                                 'black': 'ic:specific,isc:black', 'brown': 'ic:specific,isc:brown'}],
+                  'color_type': [arguments['color_type'],
+                                 {'full-color': 'ic:color', 'black-and-white': 'ic:gray', 'transparent': 'ic:trans'}],
+                  'usage_rights': [arguments['usage_rights'],
+                                   {'labeled-for-reuse-with-modifications': 'sur:fmc', 'labeled-for-reuse': 'sur:fc',
+                                    'labeled-for-noncommercial-reuse-with-modification': 'sur:fm',
+                                    'labeled-for-nocommercial-reuse': 'sur:f'}],
+                  'size': [arguments['size'],
+                           {'large': 'isz:l', 'medium': 'isz:m', 'icon': 'isz:i', '>400*300': 'isz:lt,islt:qsvga',
+                            '>640*480': 'isz:lt,islt:vga', '>800*600': 'isz:lt,islt:svga',
+                            '>1024*768': 'visz:lt,islt:xga', '>2MP': 'isz:lt,islt:2mp', '>4MP': 'isz:lt,islt:4mp',
+                            '>6MP': 'isz:lt,islt:6mp', '>8MP': 'isz:lt,islt:8mp', '>10MP': 'isz:lt,islt:10mp',
+                            '>12MP': 'isz:lt,islt:12mp', '>15MP': 'isz:lt,islt:15mp', '>20MP': 'isz:lt,islt:20mp',
+                            '>40MP': 'isz:lt,islt:40mp', '>70MP': 'isz:lt,islt:70mp'}],
+                  'type': [arguments['type'], {'face': 'itp:face', 'photo': 'itp:photo', 'clipart': 'itp:clipart',
+                                               'line-drawing': 'itp:lineart', 'animated': 'itp:animated'}],
+                  'time': [arguments['time'], {'past-24-hours': 'qdr:d', 'past-7-days': 'qdr:w', 'past-month': 'qdr:m',
+                                               'past-year': 'qdr:y'}],
+                  'aspect_ratio': [arguments['aspect_ratio'],
+                                   {'tall': 'iar:t', 'square': 'iar:s', 'wide': 'iar:w', 'panoramic': 'iar:xw'}],
+                  'format': [arguments['format'],
+                             {'jpg': 'ift:jpg', 'gif': 'ift:gif', 'png': 'ift:png', 'bmp': 'ift:bmp', 'svg': 'ift:svg',
+                              'webp': 'webp', 'ico': 'ift:ico', 'raw': 'ift:craw'}]}
+
         for key, value in params.items():
             if value[0] is not None:
                 ext_param = value[1][value[0]]
@@ -413,13 +519,14 @@ class googleimagesdownload:
                 else:
                     built_url = built_url + ',' + ext_param
                     counter += 1
+
         built_url = lang_url+built_url+exact_size+time_range
         return built_url
 
 
-    #building main search URL
-    def build_search_url(self,search_term,params,url,similar_images,specific_site,safe_search):
-        #check safe_search
+     # building main search URL
+    def build_search_url(self, search_term, params, url, similar_images, specific_site, safe_search):
+        # check safe_search
         safe_search_string = "&safe=active"
         # check the args and choose the URL
         if url:
@@ -435,15 +542,15 @@ class googleimagesdownload:
             url = 'https://www.google.com/search?q=' + quote(
                 search_term.encode('utf-8')) + '&espv=2&biw=1366&bih=667&site=webhp&source=lnms&tbm=isch' + params + '&sa=X&ei=XosDVaCXD8TasATItgE&ved=0CAcQ_AUoAg'
 
-        #safe search check
+        # safe search check
         if safe_search:
             url = url + safe_search_string
 
         return url
 
 
-    #measures the file size
-    def file_size(self,file_path):
+    # measures the file size
+    def file_size(self, file_path):
         if os.path.isfile(file_path):
             file_info = os.stat(file_path)
             size = file_info.st_size
@@ -453,8 +560,8 @@ class googleimagesdownload:
                 size /= 1024.0
             return size
 
-    #keywords from file
-    def keywords_from_file(self,file_name):
+    # keywords from file
+    def keywords_from_file(self, file_name):
         search_keyword = []
         with codecs.open(file_name, 'r', encoding='utf-8-sig') as f:
             if '.csv' in file_name:
@@ -476,13 +583,13 @@ class googleimagesdownload:
         return search_keyword
 
     # make directories
-    def create_directories(self,main_directory, dir_name,thumbnail,thumbnail_only):
+    def create_directories(self, main_directory, dir_name, thumbnail, thumbnail_only):
         dir_name_thumbnail = dir_name + " - thumbnail"
         # make a search keyword  directory
         try:
             if not os.path.exists(main_directory):
                 os.makedirs(main_directory)
-                time.sleep(0.2)
+                time.sleep(0.15)
                 path = (dir_name)
                 sub_directory = os.path.join(main_directory, path)
                 if not os.path.exists(sub_directory):
@@ -508,11 +615,12 @@ class googleimagesdownload:
 
 
     # Download Image thumbnails
-    def download_image_thumbnail(self,image_url,main_directory,dir_name,return_image_name,print_urls,socket_timeout,print_size,no_download,save_source,img_src,ignore_urls):
+    def download_image_thumbnail(self, image_url, main_directory, dir_name, return_image_name, print_urls,
+                                 socket_timeout, print_size, no_download, save_source, img_src, ignore_urls):
         if print_urls or no_download:
             print("Image URL: " + image_url)
         if no_download:
-            return "success","Printed url without downloading"
+            return "success", "Printed url without downloading"
         try:
             req = Request(image_url, headers={
                 "User-Agent": "Mozilla/5.0 (X11; Linux i686) AppleWebKit/537.17 (KHTML, like Gecko) Chrome/24.0.1312.27 Safari/537.17"})
@@ -535,7 +643,7 @@ class googleimagesdownload:
                     output_file.close()
                     if save_source:
                         list_path = main_directory + "/" + save_source + ".txt"
-                        list_file = open(list_path,'a')
+                        list_file = open(list_path, 'a')
                         list_file.write(path + '\t' + img_src + '\n')
                         list_file.close()
                 except OSError as e:
@@ -575,7 +683,9 @@ class googleimagesdownload:
 
 
     # Download Images
-    def download_image(self,image_url,image_format,main_directory,dir_name,count,print_urls,socket_timeout,prefix,print_size,no_numbering,no_download,save_source,img_src,silent_mode,thumbnail_only,format,ignore_urls):
+    def download_image(self, image_url, image_format, main_directory, dir_name, count, print_urls, socket_timeout,
+                       prefix, print_size, no_numbering, no_download, save_source, img_src, silent_mode, thumbnail_only,
+                       format, ignore_urls):
         if not silent_mode:
             if print_urls or no_download:
                 print("Image URL: " + image_url)
@@ -585,7 +695,7 @@ class googleimagesdownload:
         if thumbnail_only:
             return "success", "Skipping image download...", str(image_url[(image_url.rfind('/')) + 1:]), image_url
         if no_download:
-            return "success","Printed url without downloading",None,image_url
+            return "success", "Printed url without downloading", None, image_url
         try:
             req = Request(image_url, headers={
                 "User-Agent": "Mozilla/5.0 (X11; Linux i686) AppleWebKit/537.17 (KHTML, like Gecko) Chrome/24.0.1312.27 Safari/537.17"})
@@ -598,29 +708,43 @@ class googleimagesdownload:
 
                 response = urlopen(req, None, timeout)
                 data = response.read()
+                info = response.info()
                 response.close()
 
-                extensions = [".jpg", ".jpeg", ".gif", ".png", ".bmp", ".svg", ".webp", ".ico"]
-                # keep everything after the last '/'
-                image_name = str(image_url[(image_url.rfind('/')) + 1:])
-                if format:
-                    if not image_format or image_format != format:
-                        download_status = 'fail'
-                        download_message = "Wrong image format returned. Skipping..."
-                        return_image_name = ''
-                        absolute_path = ''
-                        return download_status, download_message, return_image_name, absolute_path
+                qmark = image_url.rfind('?')
+                if qmark == -1:
+                    qmark = len(image_url)
+                slash = image_url.rfind('/', 0, qmark) + 1
+                image_name = str(image_url[slash:qmark]).lower()
 
-                if image_format == "" or not image_format or "." + image_format not in extensions:
+                type = info.get_content_type()
+                if type == "image/jpeg" or type == "image/jpg":
+                    if not image_name.endswith(".jpg") and not image_name.endswith(".jpeg"):
+                        image_name += ".jpg"
+                elif type == "image/png":
+                    if not image_name.endswith(".png"):
+                        image_name += ".png"
+                elif type == "image/webp":
+                    if not image_name.endswith(".webp"):
+                        image_name += ".webp"
+                elif type == "image/gif":
+                    if not image_name.endswith(".gif"):
+                        image_name += ".gif"
+                elif type == "image/bmp" or type == "image/x-windows-bmp":
+                    if not image_name.endswith(".bmp"):
+                        image_name += ".bmp"
+                elif type == "image/x-icon" or type == "image/vnd.microsoft.icon":
+                    if not image_name.endswith(".ico"):
+                        image_name += ".ico"
+                elif type == "image/svg+xml":
+                    if not image_name.endswith(".svg"):
+                        image_name += ".svg"
+                else:
                     download_status = 'fail'
                     download_message = "Invalid or missing image format. Skipping..."
                     return_image_name = ''
                     absolute_path = ''
                     return download_status, download_message, return_image_name, absolute_path
-                elif image_name.lower().find("." + image_format) < 0:
-                    image_name = image_name + "." + image_format
-                else:
-                    image_name = image_name[:image_name.lower().find("." + image_format) + (len(image_format) + 1)]
 
                 # prefix name in image
                 if prefix:
@@ -639,7 +763,7 @@ class googleimagesdownload:
                     output_file.close()
                     if save_source:
                         list_path = main_directory + "/" + save_source + ".txt"
-                        list_file = open(list_path,'a')
+                        list_file = open(list_path, 'a')
                         list_file.write(path + '\t' + img_src + '\n')
                         list_file.close()
                     absolute_path = os.path.abspath(path)
@@ -649,7 +773,7 @@ class googleimagesdownload:
                     return_image_name = ''
                     absolute_path = ''
 
-                #return image name back to calling method to use it for thumbnail downloads
+                # return image name back to calling method to use it for thumbnail downloads
                 download_status = 'success'
                 download_message = "Completed Image ====> " + prefix + str(count) + "." + image_name
                 return_image_name = prefix + str(count) + "." + image_name
@@ -707,70 +831,46 @@ class googleimagesdownload:
             return_image_name = ''
             absolute_path = ''
 
-        return download_status,download_message,return_image_name,absolute_path
-
-
-    # Finding 'Next Image' from the given raw page
-    def _get_next_item(self,s):
-        start_line = s.find('rg_meta notranslate')
-        if start_line == -1:  # If no links are found then give an error!
-            end_quote = 0
-            link = "no_links"
-            return link, end_quote
-        else:
-            start_line = s.find('class="rg_meta notranslate">')
-            start_object = s.find('{', start_line + 1)
-            end_object = s.find('</div>', start_object + 1)
-            object_raw = str(s[start_object:end_object])
-            #remove escape characters based on python version
-            version = (3, 0)
-            cur_version = sys.version_info
-            if cur_version >= version: #python3
-                try:
-                    object_decode = bytes(object_raw, "utf-8").decode("unicode_escape")
-                    final_object = json.loads(object_decode)
-                except:
-                    final_object = ""
-            else:  #python2
-                try:
-                    final_object = (json.loads(self.repair(object_raw)))
-                except:
-                    final_object = ""
-            return final_object, end_object
+        return download_status, download_message, return_image_name, absolute_path
 
 
     # Getting all links with the help of '_images_get_next_image'
-    def _get_all_items(self,page,main_directory,dir_name,limit,arguments):
+    def _get_all_items(self, image_objects, main_directory, dir_name, limit, arguments):
         items = []
         abs_path = []
         errorCount = 0
         i = 0
         count = 1
-        while count < limit+1:
-            object, end_content = self._get_next_item(page)
-            if object == "no_links":
+        while count < limit + 1 and i < len(image_objects):
+            if len(image_objects) == 0:
+                print("no_links")
                 break
-            elif object == "":
-                page = page[end_content:]
-            elif arguments['offset'] and count < int(arguments['offset']):
-                    count += 1
-                    page = page[end_content:]
             else:
-                #format the item for readability
+                # format the item for readability
                 object = self.format_object(object)
                 if arguments['metadata']:
                     if not arguments["silent_mode"]:
-                        print("\nImage Metadata: " + str(object))
+                        print("\nImage Metadata: " + str(image_objects[i]))
 
-                #download the images
-                download_status,download_message,return_image_name,absolute_path = self.download_image(object['image_link'],object['image_format'],main_directory,dir_name,count,arguments['print_urls'],arguments['socket_timeout'],arguments['prefix'],arguments['print_size'],arguments['no_numbering'],arguments['no_download'],arguments['save_source'],object['image_source'],arguments["silent_mode"],arguments["thumbnail_only"],arguments['format'],arguments['ignore_urls'])
+                # download the images
+                download_status, download_message, return_image_name, absolute_path = self.download_image(
+                    object['image_link'], object['image_format'], main_directory, dir_name, count,
+                    arguments['print_urls'], arguments['socket_timeout'], arguments['prefix'], arguments['print_size'],
+                    arguments['no_numbering'], arguments['no_download'], arguments['save_source'],
+                    object['image_source'], arguments["silent_mode"], arguments["thumbnail_only"], arguments['format'],
+                    arguments['ignore_urls'])
+
                 if not arguments["silent_mode"]:
                     print(download_message)
                 if download_status == "success":
 
                     # download image_thumbnails
                     if arguments['thumbnail'] or arguments["thumbnail_only"]:
-                        download_status, download_message_thumbnail = self.download_image_thumbnail(object['image_thumbnail_url'],main_directory,dir_name,return_image_name,arguments['print_urls'],arguments['socket_timeout'],arguments['print_size'],arguments['no_download'],arguments['save_source'],object['image_source'],arguments['ignore_urls'])
+                        download_status, download_message_thumbnail = self.download_image_thumbnail(
+                            object['image_thumbnail_url'], main_directory, dir_name, return_image_name,
+                            arguments['print_urls'], arguments['socket_timeout'], arguments['print_size'],
+                            arguments['no_download'], arguments['save_source'], object['image_source'],
+                            arguments['ignore_urls'])
                         if not arguments["silent_mode"]:
                             print(download_message_thumbnail)
 
@@ -781,21 +881,20 @@ class googleimagesdownload:
                 else:
                     errorCount += 1
 
-                #delay param
+                # delay param
                 if arguments['delay']:
                     time.sleep(int(arguments['delay']))
 
-                page = page[end_content:]
             i += 1
         if count < limit:
             print("\n\nUnfortunately all " + str(
                 limit) + " could not be downloaded because some images were not downloadable. " + str(
-                count-1) + " is all we got for this search filter!")
-        return items,errorCount,abs_path
+                count - 1) + " is all we got for this search filter!")
+        return items, errorCount, abs_path
 
 
     # Bulk Download
-    def download(self,arguments):
+    def download(self, arguments):
         paths_agg = {}
         # for input coming from other python files
         if __name__ != "__main__":
@@ -819,7 +918,7 @@ class googleimagesdownload:
                         if arguments['print_paths']:
                             print(paths.encode('raw_unicode_escape').decode('utf-8'))
                     total_errors = total_errors + errors
-                return paths_agg,total_errors
+                return paths_agg, total_errors
             # if the calling file contains params directly
             else:
                 paths, errors = self.download_executor(arguments)
@@ -839,7 +938,7 @@ class googleimagesdownload:
                     print(paths.encode('raw_unicode_escape').decode('utf-8'))
         return paths_agg, errors
 
-    def download_executor(self,arguments):
+    def download_executor(self, arguments):
         paths = {}
         errorCount = None
         for arg in args_list:
@@ -940,48 +1039,48 @@ class googleimagesdownload:
                     url = self.build_search_url(search_term,params,arguments['url'],arguments['similar_images'],arguments['specific_site'],arguments['safe_search'])      #building main search url
 
                     if limit < 101:
-                        raw_html = self.download_page(url)  # download page
+                        images, tabs = self.download_page(url)  # download page
                     else:
-                        raw_html = self.download_extended_page(url,arguments['chromedriver'])
+                        images, tabs = self.download_extended_page(url, arguments['chromedriver'])
 
                     if not arguments["silent_mode"]:
                         if arguments['no_download']:
                             print("Getting URLs without downloading images...")
                         else:
                             print("Starting Download...")
-                    items,errorCount,abs_path = self._get_all_items(raw_html,main_directory,dir_name,limit,arguments)    #get all image items and download images
+                    items,errorCount,abs_path = self._get_all_items(images, main_directory, dir_name, limit, arguments)    #get all image items and download images
                     paths[pky + search_keyword[i] + sky] = abs_path
 
-                    #dumps into a json file
+                    # dumps into a json file
                     if arguments['extract_metadata']:
                         try:
                             if not os.path.exists("logs"):
                                 os.makedirs("logs")
                         except OSError as e:
                             print(e)
-                        json_file = open("logs/"+search_keyword[i]+".json", "w")
+                        json_file = open("logs/" + search_keyword[i]+".json", "w")
                         json.dump(items, json_file, indent=4, sort_keys=True)
                         json_file.close()
 
-                    #Related images
+                    # Related images
                     if arguments['related_images']:
                         print("\nGetting list of related keywords...this may take a few moments")
-                        tabs = self.get_all_tabs(raw_html)
                         for key, value in tabs.items():
                             final_search_term = (search_term + " - " + key)
                             print("\nNow Downloading - " + final_search_term)
                             if limit < 101:
-                                new_raw_html = self.download_page(value)  # download page
+                                images, _ = self.download_page(value)  # download page
                             else:
-                                new_raw_html = self.download_extended_page(value,arguments['chromedriver'])
+                                images, _ = self.download_extended_page(value,arguments['chromedriver'])
                             self.create_directories(main_directory, final_search_term,arguments['thumbnail'],arguments['thumbnail_only'])
-                            self._get_all_items(new_raw_html, main_directory, search_term + " - " + key, limit,arguments)
+                            self._get_all_items(images, main_directory, search_term + " - " + key, limit,arguments)
 
                     i += 1
                     total_errors = total_errors + errorCount
                     if not arguments["silent_mode"]:
                         print("\nErrors: " + str(errorCount) + "\n")
         return paths, total_errors
+
 
 #------------- Main Program -------------#
 def main():
@@ -995,7 +1094,7 @@ def main():
             response.single_image(arguments['single_image'])
         else:  # or download multiple images based on keywords/keyphrase search
             response = googleimagesdownload()
-            paths,errors = response.download(arguments)  #wrapping response in a variable just for consistency
+            paths, errors = response.download(arguments)  #wrapping response in a variable just for consistency
             total_errors = total_errors + errors
 
         t1 = time.time()  # stop the timer
@@ -1005,7 +1104,6 @@ def main():
             print("Total errors: " + str(total_errors))
             print("Total time taken: " + str(total_time) + " Seconds")
 
+
 if __name__ == "__main__":
     main()
-
-# In[ ]:
